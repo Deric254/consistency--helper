@@ -120,7 +120,50 @@ with st.sidebar:
                     st.info(res['message'])
     
     if st.button("📧 Generate Outreach", use_container_width=True):
-        st.info("Use option 1 in core.py menu")
+        # Generate outreach posts from the GUI (no terminal interaction)
+        engine = ConsistencyEngine()
+        with st.form(key='generate_outreach'):
+            intent_choice = st.selectbox('Intent', ("teachingleads", "analyticsleads"), format_func=lambda x: "Teaching Leads" if x=="teachingleads" else "Analytics Leads")
+            day_number = st.number_input('Day number (1-7, leave 0 for auto)', min_value=0, max_value=7, value=0)
+            use_ai = st.checkbox('Use AI enhancement (may take longer)')
+            platform_choice = st.selectbox('Enhance platform (optional)', [None, 'whatsapp','linkedin','facebook','twitter','instagram'])
+            submit_gen = st.form_submit_button('Generate')
+
+        if submit_gen:
+            # determine day
+            if day_number == 0:
+                day_number = (datetime.now().timetuple().tm_yday % 7) + 1
+
+            audience = 'learners' if intent_choice == 'teachingleads' else 'SMEs'
+            img_ok = engine.image_manager.validate_image(day_number, intent_choice)
+            if not img_ok:
+                st.error(f"Missing image for {intent_choice}/day{day_number}.png. Use Auto-fix or add the image.")
+            else:
+                image_path = engine.image_manager.get_image_path(day_number, intent_choice)
+                posts = engine.outreach_gen.generate_post(intent_choice, audience, day_number, image_path)
+                st.success('Posts generated')
+                for p, text in posts.items():
+                    st.subheader(p.title())
+                    st.text_area(p, value=text, height=140)
+
+                # AI enhancement (run with timeout to avoid hanging)
+                if use_ai and platform_choice:
+                    import concurrent.futures
+                    with st.spinner('Enhancing post with AI...'):
+                        try:
+                            def enhance():
+                                return engine.ai_enhancer.enhance_post(posts[platform_choice], platform_choice, tone=engine.config.get('branding', {}).get('tone','empowering'))
+
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                                fut = ex.submit(enhance)
+                                enhanced = fut.result(timeout=20)
+                            st.success('AI enhancement complete')
+                            st.subheader(f'{platform_choice.title()} (Enhanced)')
+                            st.text_area(f"{platform_choice}_enhanced", value=enhanced, height=140)
+                        except concurrent.futures.TimeoutError:
+                            st.error('AI enhancement timed out (took too long). Try again or disable AI).')
+                        except Exception as e:
+                            st.error(f'AI enhancement failed: {e}')
     
     if st.button("📅 View Schedule", use_container_width=True):
         st.info("Checking scheduled items...")
