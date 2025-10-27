@@ -1,0 +1,21 @@
+{
+  "name": "Deric Marangu",
+  "phone": "+254791360805",
+  "email": "dericmarangu@gmail.com",
+  "links": {
+    "DericBI": "https://dericBi.netlify.app",
+    "Tujengane": "https://tujengane.netlify.app"
+  },
+  "branding": {
+    "tone": "empowering",
+    "style": "minimal",
+    "primary_color": "#2e7d32",
+    "language": "English"
+  },
+  "si_time": "13:00",
+  "ai_api": {
+    "provider": "huggingface",
+    "api_key": "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",
+    "model": "mistralai/Mistral-7B-Instruct-v0.2"
+  }
+}
