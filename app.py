@@ -112,7 +112,28 @@ with st.sidebar:
                         st.subheader("Generated Posts")
                         for p, text in res['posts'].items():
                             st.markdown(f"**{p.title()}**")
-                            st.text_area(f"{p}", value=text, height=120)
+                            st.text_area(f"{p}", value=text, height=120, key=f"run_daily_post_{p}")
+                            cols = st.columns([3,2])
+                            with cols[0]:
+                                if st.button(f"Log {p} to DB", key=f"run_daily_log_{p}"):
+                                    try:
+                                        engine.db.log_task("Post outreach message", text, intent_choice or 'teachingleads', str(res.get('image_path','')))
+                                        engine.db.update_daily_progress()
+                                        st.success(f'Logged {p} post to DB')
+                                    except Exception as e:
+                                        st.error(f'Failed to log: {e}')
+                            with cols[1]:
+                                if st.button(f"Post Now ({p})", key=f"run_daily_postnow_{p}"):
+                                    ok, msg = post(p, text)
+                                    status = 'success' if ok else 'failed'
+                                    try:
+                                        engine.db.log_task(f"Post outreach message ({p}) - {status}", f"{text}\n\n[POST RESULT] {msg}", intent_choice or 'teachingleads', str(res.get('image_path','')))
+                                        if ok:
+                                            st.success(f'Posted to {p.title()}: {msg}')
+                                        else:
+                                            st.error(f'Failed to post to {p.title()}: {msg}')
+                                    except Exception as e:
+                                        st.error(f'Failed to log post attempt: {e}')
                 else:
                     st.error(res['message'])
             else:
@@ -207,12 +228,31 @@ with st.sidebar:
                             except Exception as e:
                                 st.error(f'AI enhancement failed: {e}')
 
-                # allow logging original generated posts per-platform
+                # allow logging and posting original generated posts per-platform
                 for p in posts.keys():
-                    if st.button(f"Log {p} to DB"):
-                        engine.db.log_task("Post outreach message", posts[p], intent_choice, str(image_path))
-                        engine.db.update_daily_progress()
-                        st.success(f'Logged {p} post to DB')
+                    cols = st.columns([6,2,2])
+                    with cols[0]:
+                        st.write(f"{p.title()}")
+                    with cols[1]:
+                        if st.button(f"Log {p} to DB", key=f"log_{p}"):
+                            try:
+                                engine.db.log_task("Post outreach message", posts[p], intent_choice, str(image_path))
+                                engine.db.update_daily_progress()
+                                st.success(f'Logged {p} post to DB')
+                            except Exception as e:
+                                st.error(f'Failed to log {p}: {e}')
+                    with cols[2]:
+                        if st.button(f"Post Now ({p})", key=f"postnow_{p}"):
+                            ok, msg = post(p, posts[p])
+                            status = 'success' if ok else 'failed'
+                            try:
+                                engine.db.log_task(f"Post outreach message ({p}) - {status}", f"{posts[p]}\n\n[POST RESULT] {msg}", intent_choice, str(image_path))
+                                if ok:
+                                    st.success(f'Posted to {p.title()}: {msg}')
+                                else:
+                                    st.error(f'Failed to post to {p.title()}: {msg}')
+                            except Exception as e:
+                                st.error(f'Failed to log post attempt: {e}')
     
     if st.button("📅 View Schedule", use_container_width=True):
         st.info("Checking scheduled items...")
