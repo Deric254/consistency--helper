@@ -4,11 +4,14 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import json
+from pathlib import Path
 
 # Ensure DB schema and image checks run when the GUI starts so users
 # don't need to run terminal helpers manually.
 from core import Database, ImageManager, ConsistencyEngine
 from scripts.normalize_images import normalize_images, pretty_print
+from social_poster import post, load_secrets
 
 # Green theme configuration
 GREEN_PRIMARY = "#2e7d32"
@@ -120,13 +123,22 @@ with st.sidebar:
                     st.info(res['message'])
     
     if st.button("📧 Generate Outreach", use_container_width=True):
-        # Generate outreach posts from the GUI (no terminal interaction)
-        engine = ConsistencyEngine()
+        # Ensure a single engine instance per Streamlit session
+        if 'engine' not in st.session_state:
+            st.session_state.engine = ConsistencyEngine()
+        engine = st.session_state.engine
+
         with st.form(key='generate_outreach'):
             intent_choice = st.selectbox('Intent', ("teachingleads", "analyticsleads"), format_func=lambda x: "Teaching Leads" if x=="teachingleads" else "Analytics Leads")
             day_number = st.number_input('Day number (1-7, leave 0 for auto)', min_value=0, max_value=7, value=0)
+            # allow explicit selection of platforms to generate
+            platforms = engine.outreach_gen.PLATFORMS
+            chosen = st.multiselect('Platforms to generate', options=platforms, default=platforms)
             use_ai = st.checkbox('Use AI enhancement (may take longer)')
-            platform_choice = st.selectbox('Enhance platform (optional)', [None, 'whatsapp','linkedin','facebook','twitter','instagram'])
+            auto_log = st.checkbox('Automatically log generated posts to DB', value=False)
+            ai_platform = None
+            if use_ai:
+                ai_platform = st.selectbox('Which platform to enhance (optional)', [None] + platforms)
             submit_gen = st.form_submit_button('Generate')
 
         if submit_gen:
@@ -140,30 +152,67 @@ with st.sidebar:
                 st.error(f"Missing image for {intent_choice}/day{day_number}.png. Use Auto-fix or add the image.")
             else:
                 image_path = engine.image_manager.get_image_path(day_number, intent_choice)
-                posts = engine.outreach_gen.generate_post(intent_choice, audience, day_number, image_path)
-                st.success('Posts generated')
-                for p, text in posts.items():
-                    st.subheader(p.title())
-                    st.text_area(p, value=text, height=140)
+                # generate full set and filter by chosen
+                with st.spinner('Generating posts...'):
+                    posts = engine.outreach_gen.generate_post(intent_choice, audience, day_number, image_path)
+
+                # filter posts to only chosen platforms
+                posts = {p: posts[p] for p in posts.keys() if p in chosen}
+
+                if not posts:
+                    st.info('No platforms selected.')
+                else:
+                    st.success('Posts generated')
+                    for p, text in posts.items():
+                        st.subheader(p.title())
+                        st.text_area(p, value=text, height=140, key=f"post_{p}")
+
+                    # Auto-log generated posts if requested. Log one task completion for the outreach task.
+                    if auto_log:
+                        try:
+                            for p, text in posts.items():
+                                engine.db.log_task("Post outreach message", text, intent_choice, str(image_path))
+                            # mark task complete once
+                            engine.db.update_daily_progress()
+                            st.success('All generated posts logged to DB and progress updated')
+                            # Refresh the app so metrics update
+                            st.experimental_rerun()
+                        except Exception as e:
+                            st.error(f'Failed to auto-log posts: {e}')
 
                 # AI enhancement (run with timeout to avoid hanging)
-                if use_ai and platform_choice:
-                    import concurrent.futures
-                    with st.spinner('Enhancing post with AI...'):
-                        try:
-                            def enhance():
-                                return engine.ai_enhancer.enhance_post(posts[platform_choice], platform_choice, tone=engine.config.get('branding', {}).get('tone','empowering'))
+                if use_ai and ai_platform:
+                    if ai_platform not in posts:
+                        st.warning(f"AI platform {ai_platform} not in generated set; skipping enhancement.")
+                    else:
+                        import concurrent.futures
+                        with st.spinner('Enhancing post with AI...'):
+                            try:
+                                def enhance():
+                                    return engine.ai_enhancer.enhance_post(posts[ai_platform], ai_platform, tone=engine.config.get('branding', {}).get('tone','empowering'))
 
-                            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                                fut = ex.submit(enhance)
-                                enhanced = fut.result(timeout=20)
-                            st.success('AI enhancement complete')
-                            st.subheader(f'{platform_choice.title()} (Enhanced)')
-                            st.text_area(f"{platform_choice}_enhanced", value=enhanced, height=140)
-                        except concurrent.futures.TimeoutError:
-                            st.error('AI enhancement timed out (took too long). Try again or disable AI).')
-                        except Exception as e:
-                            st.error(f'AI enhancement failed: {e}')
+                                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                                    fut = ex.submit(enhance)
+                                    enhanced = fut.result(timeout=20)
+                                st.success('AI enhancement complete')
+                                st.subheader(f'{ai_platform.title()} (Enhanced)')
+                                st.text_area(f"{ai_platform}_enhanced", value=enhanced, height=140)
+                                # offer to log the enhanced version
+                                if st.button(f"Log {ai_platform} (enhanced) to DB"):
+                                    engine.db.log_task("Post outreach message", enhanced, intent_choice, str(image_path))
+                                    engine.db.update_daily_progress()
+                                    st.success('Logged enhanced post to DB')
+                            except concurrent.futures.TimeoutError:
+                                st.error('AI enhancement timed out (took too long). Try again or disable AI).')
+                            except Exception as e:
+                                st.error(f'AI enhancement failed: {e}')
+
+                # allow logging original generated posts per-platform
+                for p in posts.keys():
+                    if st.button(f"Log {p} to DB"):
+                        engine.db.log_task("Post outreach message", posts[p], intent_choice, str(image_path))
+                        engine.db.update_daily_progress()
+                        st.success(f'Logged {p} post to DB')
     
     if st.button("📅 View Schedule", use_container_width=True):
         st.info("Checking scheduled items...")
@@ -175,6 +224,47 @@ with st.sidebar:
         "View Range",
         ["Last 7 Days", "Last 30 Days", "All Time"]
     )
+
+    # Social credentials settings
+    st.subheader('🔐 Social Accounts (optional)')
+    secrets = load_secrets()
+    linkedin = st.text_input('LinkedIn Access Token', value=secrets.get('linkedin_token',''))
+    twitter = st.text_input('Twitter Bearer Token', value=secrets.get('twitter_bearer',''))
+    facebook = st.text_input('Facebook Page Token', value=secrets.get('facebook_page_token',''))
+    whatsapp_url = st.text_input('WhatsApp API URL', value=secrets.get('whatsapp_url',''))
+    whatsapp_token = st.text_input('WhatsApp API Token', value=secrets.get('whatsapp_token',''))
+
+    if st.button('Save Social Credentials'):
+        # Write secrets.json locally and ensure it's gitignored
+        data = {
+            'linkedin_token': linkedin.strip(),
+            'twitter_bearer': twitter.strip(),
+            'facebook_page_token': facebook.strip(),
+            'whatsapp_url': whatsapp_url.strip(),
+            'whatsapp_token': whatsapp_token.strip()
+        }
+        try:
+            Path('secrets.json').write_text(json.dumps(data, indent=2))
+            # ensure .gitignore contains secrets.json
+            gi = Path('.gitignore')
+            if gi.exists():
+                content = gi.read_text()
+                if 'secrets.json' not in content:
+                    gi.write_text(content + '\nsecrets.json\n')
+            else:
+                Path('.gitignore').write_text('secrets.json\n')
+            st.success('Credentials saved locally to secrets.json (not committed).')
+        except Exception as e:
+            st.error(f'Failed to save credentials: {e}')
+
+    if st.button('Test Social Credentials'):
+        s = load_secrets()
+        for p in ('linkedin','twitter','facebook','whatsapp'):
+            ok, msg = post(p, 'Test message')
+            if ok:
+                st.success(f'{p.title()}: OK — {msg}')
+            else:
+                st.warning(f'{p.title()}: {msg}')
 
 # Main metrics
 col1, col2, col3, col4 = st.columns(4)
