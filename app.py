@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 # Ensure DB schema and image checks run when the GUI starts so users
 # don't need to run terminal helpers manually.
-from core import Database, ImageManager
+from core import Database, ImageManager, ConsistencyEngine
 from scripts.normalize_images import normalize_images, pretty_print
 
 # Green theme configuration
@@ -82,7 +82,42 @@ with st.sidebar:
     st.header("🎯 Quick Actions")
     
     if st.button("▶️ Run Daily Flow", use_container_width=True):
-        st.info("Execute from terminal: `python core.py`")
+        # Open a small form to run the daily flow via GUI
+        engine = ConsistencyEngine()
+        progress = engine.db.get_today_progress()
+        idx = progress['tasks_completed']
+        current_task = engine.tasks[idx] if idx < len(engine.tasks) else None
+
+        with st.form(key='daily_flow_form'):
+            st.write(f"Current task: {current_task}")
+            if current_task and "Post outreach message" in current_task:
+                intent_choice = st.selectbox("Intent", ("teachingleads", "analyticsleads"), format_func=lambda x: "Teaching Leads" if x=="teachingleads" else "Analytics Leads")
+                platforms = ["whatsapp","linkedin","facebook","twitter","instagram"]
+                platform_choice = st.selectbox("Enhance platform (optional)", [None] + platforms)
+                use_ai = st.checkbox("Use AI enhancement (if available)")
+                submit = st.form_submit_button("Run Outreach")
+            else:
+                confirm = st.checkbox("Mark this task as complete")
+                submit = st.form_submit_button("Run Task")
+
+        if submit:
+            if current_task and "Post outreach message" in current_task:
+                res = engine.run_daily_flow_gui(intent_choice=intent_choice, enhance_platform=platform_choice, use_enhanced=use_ai)
+                if res['status'] == 'ok':
+                    st.success(res['message'])
+                    if res.get('posts'):
+                        st.subheader("Generated Posts")
+                        for p, text in res['posts'].items():
+                            st.markdown(f"**{p.title()}**")
+                            st.text_area(f"{p}", value=text, height=120)
+                else:
+                    st.error(res['message'])
+            else:
+                res = engine.run_daily_flow_gui(confirm_standard=confirm)
+                if res['logged']:
+                    st.success(res['message'])
+                else:
+                    st.info(res['message'])
     
     if st.button("📧 Generate Outreach", use_container_width=True):
         st.info("Use option 1 in core.py menu")

@@ -533,6 +533,79 @@ class ConsistencyEngine:
         
         print(f"\n✓ Task completed: {current_task}")
         print(f"📊 Progress: {current_task_index + 1}/{len(self.tasks)} tasks\n")
+
+    def run_daily_flow_gui(self, intent_choice=None, enhance_platform=None, use_enhanced=False, confirm_standard=True):
+        """Run the daily flow non-interactively for GUI use.
+
+        Parameters:
+        - intent_choice: 'teachingleads' or 'analyticsleads' (or None to infer)
+        - enhance_platform: platform string to enhance (e.g., 'linkedin') or None
+        - use_enhanced: bool whether to apply enhanced text
+        - confirm_standard: bool whether to mark a standard task complete
+
+        Returns a dict with keys: status ('ok'|'error'), message, posts (if any), logged(bool).
+        """
+        # Check for missing images
+        missing_images = self.image_manager.get_missing_images()
+        if missing_images:
+            return {"status": "error", "message": "Missing images", "missing": missing_images}
+
+        # Check scheduled items (no interactive output)
+        self.scheduler.check_and_notify()
+
+        progress = self.db.get_today_progress()
+        current_task_index = progress['tasks_completed']
+
+        if current_task_index >= len(self.tasks):
+            return {"status": "ok", "message": "All tasks completed for today", "logged": False}
+
+        current_task = self.tasks[current_task_index]
+
+        # Outreach task
+        if "Post outreach message" in current_task:
+            day_number = (datetime.now().timetuple().tm_yday % 7) + 1
+
+            # Determine intent
+            intent = intent_choice or 'teachingleads'
+            audience = 'learners' if intent == 'teachingleads' else 'SMEs'
+
+            # Validate image
+            if not self.image_manager.validate_image(day_number, intent):
+                return {"status": "error", "message": f"Missing image: {intent}/day{day_number}.png", "logged": False}
+
+            image_path = self.image_manager.get_image_path(day_number, intent)
+
+            # Generate posts
+            posts = self.outreach_gen.generate_post(intent, audience, day_number, image_path)
+
+            selected_platform = enhance_platform
+            enhanced_text = None
+
+            if selected_platform and use_enhanced:
+                try:
+                    tone = self.config.get('branding', {}).get('tone', 'empowering')
+                    enhanced_text = self.ai_enhancer.enhance_post(posts[selected_platform], selected_platform, tone=tone)
+                except Exception as e:
+                    # fallback to original
+                    enhanced_text = posts.get(selected_platform)
+
+            # Decide which text to log
+            to_log = enhanced_text if (enhanced_text and use_enhanced) else posts.get(selected_platform or 'linkedin')
+
+            # Log to database
+            self.db.log_task("Post outreach message", to_log, intent, str(image_path))
+            self.db.update_daily_progress()
+
+            return {"status": "ok", "message": "Outreach generated and logged", "posts": posts, "enhanced": enhanced_text is not None, "logged": True}
+
+        # Standard task
+        else:
+            if confirm_standard:
+                self.db.log_task(current_task)
+                self.db.update_daily_progress()
+                return {"status": "ok", "message": "Task logged", "logged": True}
+            else:
+                return {"status": "ok", "message": "Task not logged", "logged": False}
     
     def _execute_outreach_task(self):
         """Generate and log outreach posts with AI enhancement"""
