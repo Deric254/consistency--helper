@@ -227,8 +227,27 @@ class ImageManager:
     
     def validate_image(self, day_number, intent):
         """Check if required image exists"""
-        image_path = self.get_image_path(day_number, intent)
-        return image_path.exists()
+        # Accept a few common filename variants so the GUI doesn't require
+        # manual renames: prefer day{n}.png, but also accept N.png, N.jpeg, N.jpg
+        if intent == "teachingleads":
+            directory = self.teaching_dir
+        elif intent == "analyticsleads":
+            directory = self.analytics_dir
+        else:
+            raise ValueError(f"Invalid intent: {intent}. Use 'teachingleads' or 'analyticsleads'")
+
+        candidates = [
+            directory / f"day{day_number}.png",
+            directory / f"{day_number}.png",
+            directory / f"{day_number}.jpeg",
+            directory / f"{day_number}.jpg",
+        ]
+
+        for p in candidates:
+            if p.exists():
+                return True
+
+        return False
     
     def get_missing_images(self):
         """Return list of missing images"""
