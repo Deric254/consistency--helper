@@ -83,6 +83,9 @@ st.markdown("---")
 # Sidebar
 with st.sidebar:
     st.header("🎯 Quick Actions")
+    st.markdown("---")
+    # Dry-run toggle for safe testing of publishing
+    dry_run = st.checkbox('Dry-run (preview payloads, do not send)', value=True)
     
     if st.button("▶️ Run Daily Flow", use_container_width=True):
         # Open a small form to run the daily flow via GUI
@@ -124,7 +127,7 @@ with st.sidebar:
                                         st.error(f'Failed to log: {e}')
                             with cols[1]:
                                 if st.button(f"Post Now ({p})", key=f"run_daily_postnow_{p}"):
-                                    ok, msg = post(p, text)
+                                    ok, msg = post(p, text, dry_run=dry_run)
                                     status = 'success' if ok else 'failed'
                                     try:
                                         engine.db.log_task(f"Post outreach message ({p}) - {status}", f"{text}\n\n[POST RESULT] {msg}", intent_choice or 'teachingleads', str(res.get('image_path','')))
@@ -243,7 +246,7 @@ with st.sidebar:
                                 st.error(f'Failed to log {p}: {e}')
                     with cols[2]:
                         if st.button(f"Post Now ({p})", key=f"postnow_{p}"):
-                            ok, msg = post(p, posts[p])
+                            ok, msg = post(p, posts[p], dry_run=dry_run)
                             status = 'success' if ok else 'failed'
                             try:
                                 engine.db.log_task(f"Post outreach message ({p}) - {status}", f"{posts[p]}\n\n[POST RESULT] {msg}", intent_choice, str(image_path))

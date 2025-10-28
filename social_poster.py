@@ -84,16 +84,153 @@ def post_to_whatsapp(text, creds):
         return False, str(e)
 
 
-def post(platform, text):
+def _safe_request(method, url, **kwargs):
+    try:
+        r = requests.request(method, url, timeout=15, **kwargs)
+        try:
+            body = r.text
+        except Exception:
+            body = ''
+        if 200 <= r.status_code < 300:
+            return True, f'status {r.status_code}: {body[:400]}'
+        else:
+            return False, f'status {r.status_code}: {body[:400]}'
+    except Exception as e:
+        return False, str(e)
+
+
+def publish_linkedin(text, creds):
+    """Publish text-only post to LinkedIn on behalf of the user.
+    Requires: linkedin token (member) in creds['linkedin_token']
+    For organization posting, provide 'organization_urn' in creds.
+    """
+    token = creds.get('linkedin_token')
+    if not token:
+        return False, 'No LinkedIn token configured'
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'X-Restli-Protocol-Version': '2.0.0',
+        'Content-Type': 'application/json'
+    }
+
+    # Try to resolve author urn (person)
+    ok, me = _safe_request('GET', 'https://api.linkedin.com/v2/me', headers=headers)
+    if not ok:
+        return False, f'Failed to validate token: {me}'
+
+    try:
+        person_id = json.loads(me).get('id')
+        author = f'urn:li:person:{person_id}'
+    except Exception:
+        return False, 'Failed to parse LinkedIn profile response to get person id'
+
+    payload = {
+        "author": author,
+        "lifecycleState": "PUBLISHED",
+        "specificContent": {
+            "com.linkedin.ugc.ShareContent": {
+                "shareCommentary": {"text": text},
+                "shareMediaCategory": "NONE"
+            }
+        },
+        "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"}
+    }
+
+    return _safe_request('POST', 'https://api.linkedin.com/v2/ugcPosts', headers=headers, json=payload)
+
+
+def publish_facebook(text, creds):
+    token = creds.get('facebook_page_token') or creds.get('facebook_token')
+    page_id = creds.get('facebook_page_id')
+    if not token or not page_id:
+        return False, 'Missing Facebook page token or page id (facebook_page_token, facebook_page_id)'
+
+    url = f'https://graph.facebook.com/{page_id}/feed'
+    data = {'message': text, 'access_token': token}
+    return _safe_request('POST', url, data=data)
+
+
+def publish_twitter(text, creds):
+    # Prefer OAuth2 Bearer with tweet.write scope or OAuth1.0a user tokens
+    bearer = creds.get('twitter_bearer')
+    if bearer:
+        headers = {'Authorization': f'Bearer {bearer}', 'Content-Type': 'application/json'}
+        payload = {'text': text}
+        return _safe_request('POST', 'https://api.twitter.com/2/tweets', headers=headers, json=payload)
+
+    # Try OAuth1.0a via provided tokens
+    api_key = creds.get('twitter_api_key')
+    api_secret = creds.get('twitter_api_secret')
+    access_token = creds.get('twitter_access_token')
+    access_secret = creds.get('twitter_access_secret')
+    if api_key and api_secret and access_token and access_secret:
+        # Use requests-oauthlib if present, otherwise instruct user
+        try:
+            from requests_oauthlib import OAuth1
+            auth = OAuth1(api_key, api_secret, access_token, access_secret)
+            data = {'status': text}
+            # Tweet endpoint for v1.1
+            return _safe_request('POST', 'https://api.twitter.com/1.1/statuses/update.json', auth=auth, data=data)
+        except Exception as e:
+            return False, f'OAuth1 publish failed or requests_oauthlib missing: {e}'
+
+    return False, 'Twitter credentials not found or insufficient (provide twitter_bearer or oauth1 tokens)'
+
+
+def publish_whatsapp(text, creds):
+    # First prefer Twilio if configured
+    tw_sid = creds.get('twilio_account_sid')
+    tw_token = creds.get('twilio_auth_token')
+    tw_from = creds.get('twilio_from')
+    tw_to = creds.get('twilio_to')
+    if tw_sid and tw_token and tw_from and tw_to:
+        url = f'https://api.twilio.com/2010-04-01/Accounts/{tw_sid}/Messages.json'
+        data = {'From': tw_from, 'To': tw_to, 'Body': text}
+        try:
+            r = requests.post(url, data=data, auth=(tw_sid, tw_token), timeout=15)
+            if 200 <= r.status_code < 300:
+                return True, f'Twilio sent (status {r.status_code})'
+            else:
+                return False, f'Twilio API returned {r.status_code}: {r.text[:400]}'
+        except Exception as e:
+            return False, str(e)
+
+    # Otherwise try generic WhatsApp Business API (user must provide full url and token)
+    url = creds.get('whatsapp_url')
+    token = creds.get('whatsapp_token')
+    if not url or not token:
+        return False, 'WhatsApp configuration missing (twilio or whatsapp_url + whatsapp_token required)'
+
+    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    payload = {'text': text}
+    return _safe_request('POST', url, headers=headers, json=payload)
+
+
+def post(platform, text, dry_run=True):
+    """High-level publish entry point. If dry_run=True, returns the prepared payload without sending."""
     creds = load_secrets()
     platform = platform.lower()
+
+    # Dry-run: build a preview message and return True with the payload preview
+    if dry_run:
+        preview = {
+            'platform': platform,
+            'text': text,
+            'creds_keys': list(creds.keys())
+        }
+        return True, f'Dry-run preview: {json.dumps(preview)}'
+
     if platform == 'linkedin':
-        return post_to_linkedin(text, creds)
+        return publish_linkedin(text, creds)
     if platform == 'twitter':
-        return post_to_twitter(text, creds)
+        return publish_twitter(text, creds)
     if platform == 'facebook':
-        return post_to_facebook(text, creds)
+        return publish_facebook(text, creds)
     if platform == 'whatsapp':
-        return post_to_whatsapp(text, creds)
-    # Instagram posting requires Facebook Graph API with special endpoints
+        return publish_whatsapp(text, creds)
+    if platform == 'instagram':
+        # Instagram publishing uses Graph API and requires media flow; provide instructions
+        return False, 'Instagram publishing not implemented in this helper. Use Facebook Graph API media endpoints.'
+
     return False, 'Posting for this platform is not implemented yet'
